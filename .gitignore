@@ -1,0 +1,8 @@
+conv_v0
+conv_v1
+conv_v2
+conv_v3
+*.o
+salida*.pgm
+img2048.pgm
+img4096.pgm
