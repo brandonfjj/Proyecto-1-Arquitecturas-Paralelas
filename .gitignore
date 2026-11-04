@@ -5,4 +5,4 @@ conv_v3
 *.o
 salida*.pgm
 img2048.pgm
-img4096.pgm
+img4096.pgm*:Zone.Identifier
