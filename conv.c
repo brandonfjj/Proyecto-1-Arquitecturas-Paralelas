@@ -6,6 +6,8 @@
 
 #define N_FILTROS 3
 
+#define REPS 5
+
 /*  Primera parte: Definión de los filtros  */
 
 //  Nota importante: Los filtros se ven como matrices en el enunciado, y sí lo son, pero en este caso se definieron como arrays. Esto es porque, en C una matriz 
@@ -92,7 +94,14 @@ int main(int argc, char **argv)
     unsigned char *out = (unsigned char *)malloc((size_t)w * h);
     if (!out) { fprintf(stderr, "sin memoria\n"); return 1; }
 
-    v0(in, out, w, h, flt->K, flt->r);
+    // Medicion de 5 corridas y se reporta la mediana
+    double t[REPS];
+    for (int k = 0; k < REPS; k++) {
+        double t0 = ahora();
+        v0(in, out, w, h, flt->K, flt->r);
+        t[k] = ahora() - t0;
+    }
+    printf("mediana %.6f s\n", mediana(t, REPS));
 
     printf("checksum %" PRIu64 "\n", checksum(out, (size_t)w * h));
 
