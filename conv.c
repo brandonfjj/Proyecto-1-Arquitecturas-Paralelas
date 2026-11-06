@@ -197,6 +197,7 @@ typedef struct {
     const float         *K;
     int                  r;
     int                  y0, y1;   // filas [y0, y1) de este hilo
+    float               *acc;
 } Tarea;
  
 // Funcion que ejecuta cada hilo en V2
@@ -218,7 +219,7 @@ static void v2(const unsigned char *in, unsigned char *out, int w, int h, const 
  
     for (int k = 0; k < nh; k++) {
         int filas = base + (k < resto ? 1 : 0);
-        tarea[k] = (Tarea){ in, out, w, h, K, r, y, y + filas };
+        tarea[k] = (Tarea){ in, out, w, h, K, r, y, y + filas, NULL };
         y += filas;
  
         if (pthread_create(&hilo[k], NULL, trabajo_v2, &tarea[k]) != 0) {
@@ -232,12 +233,56 @@ static void v2(const unsigned char *in, unsigned char *out, int w, int h, const 
         pthread_join(hilo[k], NULL);
     }
 }
- 
+
+/*
+    V3: hilos + vectorizacion
+    Igual que V2, pero cada hilo corre V1 (v1_filas) en sus filas.
+    Cada hilo necesita su propio acc: si lo compartieran, todos escribirian las sumas de filas distintas en el mismo arreglo.
+*/
+
+// Funcion que ejecuta cada hilo en V3
+static void *trabajo_v3(void *arg) {
+    Tarea *t = (Tarea *)arg;
+    v1_filas(t->in, t->out, t->w, t->h, t->K, t->r, t->y0, t->y1, t->acc);
+    return NULL;
+}
+
+// Mismo reparto que V2, pero cada hilo recibe su propio acc
+static void v3(const unsigned char *in, unsigned char *out, int w, int h, const float *K, int r, int nh) {
+    pthread_t hilo[nh];
+    Tarea tarea[nh];
+
+    int base  = h / nh;
+    int resto = h % nh;
+    int y = 0;
+
+    for (int k = 0; k < nh; k++) {
+        int filas = base + (k < resto ? 1 : 0);
+        float *acc = (float *)malloc((size_t)w * sizeof(float));
+        if (!acc) {
+            fprintf(stderr, "sin memoria\n");
+            exit(1);
+        }
+        tarea[k] = (Tarea){in, out, w, h, K, r, y, y + filas, acc};
+        y += filas;
+
+        if (pthread_create(&hilo[k], NULL, trabajo_v3, &tarea[k]) != 0) {
+            fprintf(stderr, "no se pudo crear el hilo %d\n", k);
+            exit(1);
+        }
+    }
+
+    // Esperar a que todos terminen y liberar los acc
+    for (int k = 0; k < nh; k++) {
+        pthread_join(hilo[k], NULL);
+        free(tarea[k].acc);
+    }
+}
 
 int main(int argc, char **argv)
 {
     if (argc < 4) {
-        fprintf(stderr, "Uso: %s <v0|v1|v2> <blur|gauss|sobel> <entrada.pgm> [hilos] [salida.pgm]\n", argv[0]);
+        fprintf(stderr, "Uso: %s <v0|v1|v2|v3> <blur|gauss|sobel> <entrada.pgm> [hilos] [salida.pgm]\n", argv[0]);
         return 1;
     }
 
@@ -249,6 +294,8 @@ int main(int argc, char **argv)
         version = 1;
     } else if (strcmp(argv[1], "v2") == 0) {
         version = 2;
+    } else if (strcmp(argv[1], "v3") == 0) {
+        version = 3;
     } else {
         fprintf(stderr, "Version desconocida: %s\n", argv[1]);
         return 1;
@@ -292,8 +339,10 @@ int main(int argc, char **argv)
             v0(in, out, w, h, flt->K, flt->r);
         } else if (version == 1) {
             v1(in, out, w, h, flt->K, flt->r);
-        } else {
+        } else if (version == 2) {
             v2(in, out, w, h, flt->K, flt->r, nh);
+        } else {
+            v3(in, out, w, h, flt->K, flt->r, nh);
         }
         t[k] = ahora() - t0;
     }
