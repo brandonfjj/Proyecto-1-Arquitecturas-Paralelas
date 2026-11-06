@@ -3,6 +3,7 @@
 
 
 #include "pgm.h" 
+#include <pthread.h>
 
 #define N_FILTROS 3
 
@@ -172,10 +173,72 @@ static void v1(const unsigned char *in, unsigned char *out, int w, int h, const 
 }
 
 
+/*
+    V2: con hilos
+    Se reparten las filas de la imagen entre los hilos. Cada hilo calcula
+    sus propias filas de la salida con la cuenta de V0 y solo lee de la
+    entrada, asi que no hay condiciones de carrera ni hacen falta locks.
+*/
+ 
+// V0 restringida a las filas [y0, y1). Es la misma cuenta que v0.
+static void v0_filas(const unsigned char *in, unsigned char *out, int w, int h, const float *K, int r, int y0, int y1) {
+    for (int y = y0; y < y1; y++) {
+        for (int x = 0; x < w; x++) {
+            out[y * w + x] = pixel_escalar(in, w, h, K, r, y, x);
+        }
+    }
+}
+ 
+// Todo lo que un hilo necesita saber para hacer su parte
+typedef struct {
+    const unsigned char *in;
+    unsigned char       *out;
+    int                  w, h;
+    const float         *K;
+    int                  r;
+    int                  y0, y1;   // filas [y0, y1) de este hilo
+} Tarea;
+ 
+// Funcion que ejecuta cada hilo en V2
+static void *trabajo_v2(void *arg) {
+    Tarea *t = (Tarea *)arg;
+    v0_filas(t->in, t->out, t->w, t->h, t->K, t->r, t->y0, t->y1);
+    return NULL;
+}
+ 
+// Reparte las filas entre nh hilos, los crea y los espera
+static void v2(const unsigned char *in, unsigned char *out, int w, int h, const float *K, int r, int nh) {
+    pthread_t hilo[nh];
+    Tarea     tarea[nh];
+ 
+    // Reparto: h/nh filas a cada uno, las que sobran (h % nh), una a cada uno de los primeros
+    int base  = h / nh;
+    int resto = h % nh;
+    int y = 0;
+ 
+    for (int k = 0; k < nh; k++) {
+        int filas = base + (k < resto ? 1 : 0);
+        tarea[k] = (Tarea){ in, out, w, h, K, r, y, y + filas };
+        y += filas;
+ 
+        if (pthread_create(&hilo[k], NULL, trabajo_v2, &tarea[k]) != 0) {
+            fprintf(stderr, "no se pudo crear el hilo %d\n", k);
+            exit(1);
+        }
+    }
+ 
+    // Esperar a que todos terminen
+    for (int k = 0; k < nh; k++) {
+        pthread_join(hilo[k], NULL);
+    }
+}
+ 
+
 int main(int argc, char **argv)
 {
     if (argc < 4) {
-        fprintf(stderr, "Uso: %s <v0|v1> <blur|gauss|sobel> <entrada.pgm> [salida.pgm]\n", argv[0]);
+        fprintf(stderr, "Uso: %s <v0|v1|v2> <blur|gauss|sobel> <entrada.pgm> [hilos] [salida.pgm]\n", argv[0]);
+        return 1;
     }
 
     // Versión 
@@ -184,6 +247,8 @@ int main(int argc, char **argv)
         version = 0;
     } else if (strcmp(argv[1], "v1") == 0) {
         version = 1;
+    } else if (strcmp(argv[1], "v2") == 0) {
+        version = 2;
     } else {
         fprintf(stderr, "Version desconocida: %s\n", argv[1]);
         return 1;
@@ -201,6 +266,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Hilos (solo V2). Si no se indica, 1.
+    int nh = 1;
+    if (argc >= 5) {
+        nh = atoi(argv[4]);
+    }
+    if (nh < 1) {
+        fprintf(stderr, "Numero de hilos invalido: %s\n", argv[4]);
+        return 1;
+    }
+
     int w, h;
     unsigned char *in  = leer_pgm(argv[3], &w, &h);
     unsigned char *out = (unsigned char *)malloc((size_t)w * h);
@@ -215,8 +290,10 @@ int main(int argc, char **argv)
         double t0 = ahora();
         if (version == 0) {
             v0(in, out, w, h, flt->K, flt->r);
-        } else {
+        } else if (version == 1) {
             v1(in, out, w, h, flt->K, flt->r);
+        } else {
+            v2(in, out, w, h, flt->K, flt->r, nh);
         }
         t[k] = ahora() - t0;
     }
@@ -225,7 +302,7 @@ int main(int argc, char **argv)
 
     printf("checksum %" PRIu64 "\n", checksum(out, (size_t)w * h));
 
-    if (argc >= 5) escribir_pgm(argv[4], out, w, h);
+    if (argc >= 6) escribir_pgm(argv[5], out, w, h);
 
     free(in);
     free(out);
